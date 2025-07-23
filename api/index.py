@@ -45,7 +45,7 @@ def summarize_the_transcript(transcript: Transcript):
 
 @app.post("/ask")
 def ask_question(qa_input: QA_Input):
-    model_name = "distilbert-base-cased-distilled-squad"
+    model_name = "kaushalcol/bart-dialogsum-finetuned"
     payload = {
         "inputs": {
             "question": qa_input.question,
