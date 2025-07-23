@@ -1,41 +1,31 @@
 # api/index.py
 
+import os
+import requests
 from fastapi import FastAPI
 from pydantic import BaseModel
-from transformers import pipeline
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
 # --- CORS Middleware ---
-origins = ["*"] # Allow all origins for simplicity
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Lazy-loading Models ---
-# We create placeholders. The models will only be loaded into memory
-# when the corresponding endpoint is called for the first time.
-models = {}
+# --- Hugging Face API Configuration ---
+HF_API_URL = "https://api-inference.huggingface.co/models/"
+HF_TOKEN = os.getenv("HF_TOKEN") # Get token from Vercel environment variables
+headers = {"Authorization": f"Bearer {HF_TOKEN}"}
 
-def get_summarizer():
-    if "summarizer" not in models:
-        models["summarizer"] = pipeline("summarization", model="philschmid/distilbart-cnn-12-6-samsum")
-    return models["summarizer"]
-
-def get_qa():
-    if "qa" not in models:
-        models["qa"] = pipeline("question-answering", model="distilbert-base-cased-distilled-squad")
-    return models["qa"]
-
-def get_classifier():
-    if "classifier" not in models:
-        models["classifier"] = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
-    return models["classifier"]
+def query_api(payload, model_name):
+    response = requests.post(HF_API_URL + model_name, headers=headers, json=payload)
+    response.raise_for_status() # Raise an exception for bad status codes
+    return response.json()
 
 # --- Pydantic Models ---
 class Transcript(BaseModel):
@@ -48,25 +38,35 @@ class QA_Input(BaseModel):
 # --- API Endpoints ---
 @app.post("/summarize")
 def summarize_the_transcript(transcript: Transcript):
-    summarizer = get_summarizer()
-    summary = summarizer(transcript.text, max_length=150, min_length=30, do_sample=False)
-    return {"summary": summary[0]['summary_text']}
+    model_name = "philschmid/distilbart-cnn-12-6-samsum"
+    payload = {"inputs": transcript.text}
+    result = query_api(payload, model_name)
+    return {"summary": result[0]['summary_text']}
 
 @app.post("/ask")
 def ask_question(qa_input: QA_Input):
-    Youtubeer = get_qa()
-    answer = Youtubeer(question=qa_input.question, context=qa_input.context)
-    return {"answer": answer['answer']}
+    model_name = "distilbert-base-cased-distilled-squad"
+    payload = {
+        "inputs": {
+            "question": qa_input.question,
+            "context": qa_input.context
+        }
+    }
+    result = query_api(payload, model_name)
+    return {"answer": result['answer']}
 
 @app.post("/actions")
 def get_action_items(transcript: Transcript):
-    classifier = get_classifier()
+    model_name = "facebook/bart-large-mnli"
+    payload = {
+        "inputs": transcript.text.split('\n'), # Send sentences as a list
+        "parameters": {"candidate_labels": ["action item", "commitment", "task", "general discussion"]}
+    }
+    results = query_api(payload, model_name)
     action_items = []
-    sentences = transcript.text.split('\n')
-    for sentence in sentences:
-        if not sentence.strip():
-            continue
-        result = classifier(sentence, candidate_labels=["action item", "commitment", "task", "general discussion"])
+    for result in results:
+        # Check if the sentence was classified as an action item with high confidence
         if result['labels'][0] != 'general discussion' and result['scores'][0] > 0.75:
-            action_items.append(sentence.strip())
+            action_items.append(result['sequence'])
+
     return {"action_items": action_items}
